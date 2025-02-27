@@ -72,11 +72,18 @@ class T5Attention(torch.nn.Module):
     def __init__(self, model_dim, inner_dim, num_heads, relative_attention_bias, dtype, device, operations):
         super().__init__()
 
+        '''
         # Mesh TensorFlow initialization to avoid scaling before softmax
         self.q = operations.Linear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
         self.k = operations.Linear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
         self.v = operations.Linear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
         self.o = operations.Linear(inner_dim, model_dim, bias=False, dtype=dtype, device=device)
+        '''
+        self.q = operations.QuanLinear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
+        self.k = operations.QuanLinear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
+        self.v = operations.QuanLinear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
+        self.o = operations.QuanLinear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
+
         self.num_heads = num_heads
 
         self.relative_attention_bias = None

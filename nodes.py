@@ -951,6 +951,16 @@ class CLIPLoader:
         clip = comfy.sd.load_clip(ckpt_paths=[clip_path], embedding_directory=folder_paths.get_folder_paths("embeddings"), clip_type=clip_type, model_options=model_options)
         return (clip,)
 
+from comfy.ops import manual_cast as original_manual_cast
+from transformers import T5ForConditionalGeneration, CLIPModel
+def replace_linear_in_model(model):
+    for name, module in model.named_children():
+        #if isinstance(module, original_manual_cast.Linear):
+        if isinstance(module, torch.nn.Linear):
+            setattr(model, name, original_manual_cast.QuanLinear(module.in_features, module.out_features, module.bias is not None))
+        else:
+            replace_linear_in_model(module)
+
 class DualCLIPLoader:
     @classmethod
     def INPUT_TYPES(s):
@@ -968,14 +978,6 @@ class DualCLIPLoader:
 
     DESCRIPTION = "[Recipes]\n\nsdxl: clip-l, clip-g\nsd3: clip-l, clip-g / clip-l, t5 / clip-g, t5\nflux: clip-l, t5"
 
-    def replace_linear_with_quantized(model):
-        quantized_model = torch.quantization.quantize_dynamic(
-            model,
-            {torch.nn.Linear},
-            dtype=torch.qint8
-        )
-        return quantized_model
-
     def load_clip(self, clip_name1, clip_name2, type, device="default", quantize = False):
         clip_path1 = folder_paths.get_full_path_or_raise("text_encoders", clip_name1)
         clip_path2 = folder_paths.get_full_path_or_raise("text_encoders", clip_name2)
@@ -987,7 +989,16 @@ class DualCLIPLoader:
             clip_type = comfy.sd.CLIPType.FLUX
         elif type == "hunyuan_video":
             clip_type = comfy.sd.CLIPType.HUNYUAN_VIDEO
+        
+        quantized_t5_sd = []
+        if clip_type == comfy.sd.CLIPType.FLUX:
+            t5_module_path = "F:/ruimin/AI/ComfyUI/models/clip"
+            t5_model = T5ForConditionalGeneration.from_pretrained(t5_module_path,device_map=None, torch_dtype=torch.float16)
+            replace_linear_in_model(t5_model)
+            quantized_t5_sd = t5_model.state_dict()
+        
 
+        ''' for quantization by pytorch interface
         quantized_t5_sd = []
         if clip_type == comfy.sd.CLIPType.FLUX:
             # Load T5 model
@@ -1013,15 +1024,16 @@ class DualCLIPLoader:
 
             #quantized_t5_model_path = "F:/ruimin/AI/ComfyUI/models/clip/t5xxl_int8.safetensors"
             #model.save_pretrained(quantized_t5_model_path)
-            
+        '''
         model_options = {}
         if device == "cpu":
             model_options["load_device"] = model_options["offload_device"] = torch.device("cpu")
-
+      
         if clip_type == comfy.sd.CLIPType.FLUX: #load t5 quatization
-            clip = comfy.sd.load_clip_with_T5Qat(quantized_t5_sd, ckpt_paths=[clip_path1], embedding_directory=folder_paths.get_folder_paths("embeddings"), clip_type=clip_type, model_options=model_options)
+            clip = comfy.sd.load_clip_with_T5Qat(ckpt_paths=[clip_path1], t5_qat_sd_path=quantized_t5_sd, embedding_directory=folder_paths.get_folder_paths("embeddings"), clip_type=clip_type, model_options=model_options)
         else:
             clip = comfy.sd.load_clip(ckpt_paths=[clip_path1, clip_path2], embedding_directory=folder_paths.get_folder_paths("embeddings"), clip_type=clip_type, model_options=model_options)
+        
         return (clip,)
 
 class CLIPVisionLoader:

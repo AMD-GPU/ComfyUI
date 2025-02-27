@@ -20,6 +20,7 @@ import torch
 import comfy.model_management
 from comfy.cli_args import args
 import comfy.float
+from torch import quantize_per_tensor, dequantize
 
 cast_to = comfy.model_management.cast_to #TODO: remove once no more references
 
@@ -68,6 +69,32 @@ class disable_weight_init:
                 return self.forward_comfy_cast_weights(*args, **kwargs)
             else:
                 return super().forward(*args, **kwargs)
+            
+    class QuanLinear(torch.nn.Linear, CastWeightBiasOp):
+        def __init__(self, *args, quant_enabled=True, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.quant_enabled = quant_enabled
+                self.scale = torch.nn.Parameter(torch.tensor(1.0), requires_grad=False)
+                self.zero_point = torch.nn.Parameter(torch.tensor(0, dtype=torch.int32), requires_grad=False)
+
+        def _quantize_weights(self, weight):
+            # Symmetric Quantization 
+            max_val = torch.max(torch.abs(weight))
+            self.scale.data = max_val / 127.0
+            return torch.quantize_per_tensor(weight, self.scale.item(), self.zero_point.item(), torch.qint8)
+
+        def forward_comfy_cast_weights(self, input):
+            weight, bias = cast_bias_weight(self, input)
+            if self.quant_enabled and not self.training:  # disable the quantization for training
+                weight = self._quantize_weights(weight)
+                weight = weight.dequantize()  # dequantize to float32
+            return torch.nn.functional.linear(input, weight, bias)
+
+        def forward(self, *args, **kwargs):
+            if self.comfy_cast_weights:
+                return self.forward_comfy_cast_weights(*args, **kwargs)
+            else:
+                return super().forward(*args, **kwargs)               
 
     class Conv1d(torch.nn.Conv1d, CastWeightBiasOp):
         def reset_parameters(self):
@@ -124,7 +151,6 @@ class disable_weight_init:
                 return self.forward_comfy_cast_weights(*args, **kwargs)
             else:
                 return super().forward(*args, **kwargs)
-
 
     class LayerNorm(torch.nn.LayerNorm, CastWeightBiasOp):
         def reset_parameters(self):
@@ -215,9 +241,11 @@ class disable_weight_init:
         else:
             raise ValueError(f"unsupported dimensions: {dims}")
 
-
 class manual_cast(disable_weight_init):
     class Linear(disable_weight_init.Linear):
+        comfy_cast_weights = True
+
+    class QuanLinear(disable_weight_init.QuanLinear):
         comfy_cast_weights = True
 
     class Conv1d(disable_weight_init.Conv1d):
@@ -243,7 +271,6 @@ class manual_cast(disable_weight_init):
 
     class Embedding(disable_weight_init.Embedding):
         comfy_cast_weights = True
-
 
 def fp8_linear(self, input):
     dtype = self.weight.dtype
