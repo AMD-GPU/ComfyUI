@@ -1489,6 +1489,7 @@ class SetLatentNoiseMask:
         return (s,)
 
 def common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise=1.0, disable_noise=False, start_step=None, last_step=None, force_full_denoise=False):
+    execution_start_time = time.perf_counter()
     latent_image = latent["samples"]
     latent_image = comfy.sample.fix_empty_latent_channels(model, latent_image)
 
@@ -1509,6 +1510,13 @@ def common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, 
                                   force_full_denoise=force_full_denoise, noise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=seed)
     out = latent.copy()
     out["samples"] = samples
+
+    current_time = time.perf_counter()
+    execution_time = current_time - execution_start_time
+    print("OOXX time")
+    print(execution_time)
+    print("OOXX time")
+
     return (out, )
 
 class KSampler:
