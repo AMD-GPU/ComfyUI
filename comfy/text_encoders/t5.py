@@ -2,6 +2,7 @@ import torch
 import math
 from comfy.ldm.modules.attention import optimized_attention_for_device
 import comfy.ops
+from comfy.cli_args import args
 
 class T5LayerNorm(torch.nn.Module):
     def __init__(self, hidden_size, eps=1e-6, dtype=None, device=None, operations=None):
@@ -73,10 +74,19 @@ class T5Attention(torch.nn.Module):
         super().__init__()
 
         # Mesh TensorFlow initialization to avoid scaling before softmax
-        self.q = operations.Linear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
-        self.k = operations.Linear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
-        self.v = operations.Linear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
-        self.o = operations.Linear(inner_dim, model_dim, bias=False, dtype=dtype, device=device)
+        if args.int8_quant_text_enc or args.int4_quant_text_enc or args.uint4_quant_text_enc:
+            bits_len = 8 if args.int8_quant_text_enc else 4
+            isunsign = 1 if args.uint4_quant_text_enc else 0
+            self.q = operations.QuanLinear(model_dim, inner_dim, bias=False, dtype=dtype, device=device, weight_bit = bits_len, is_unsign = isunsign)
+            self.k = operations.QuanLinear(model_dim, inner_dim, bias=False, dtype=dtype, device=device, weight_bit = bits_len, is_unsign = isunsign)
+            self.v = operations.QuanLinear(model_dim, inner_dim, bias=False, dtype=dtype, device=device, weight_bit = bits_len, is_unsign = isunsign)
+            self.o = operations.QuanLinear(model_dim, inner_dim, bias=False, dtype=dtype, device=device, weight_bit = bits_len, is_unsign = isunsign)
+        else:
+            self.q = operations.Linear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
+            self.k = operations.Linear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
+            self.v = operations.Linear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
+            self.o = operations.Linear(inner_dim, model_dim, bias=False, dtype=dtype, device=device)
+
         self.num_heads = num_heads
 
         self.relative_attention_bias = None

@@ -17,6 +17,7 @@
 """
 
 import torch
+from torch import nn
 import comfy.model_management
 from comfy.cli_args import args
 import comfy.float
@@ -61,6 +62,72 @@ class disable_weight_init:
 
         def forward_comfy_cast_weights(self, input):
             weight, bias = cast_bias_weight(self, input)
+            return torch.nn.functional.linear(input, weight, bias)
+
+        def forward(self, *args, **kwargs):
+            if self.comfy_cast_weights:
+                return self.forward_comfy_cast_weights(*args, **kwargs)
+            else:
+                return super().forward(*args, **kwargs)
+
+    class QuanLinear(torch.nn.Linear, CastWeightBiasOp):
+        def __init__(self, *args, weight_bit = 4, is_unsign=False, quant_enabled=True, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.quant_enabled = quant_enabled
+            self.weight_bit = weight_bit
+            self.is_unsign = is_unsign
+
+        def _quantize_weights_int8(self, weight):
+            # Symmetric Quantization
+            self.scale = torch.nn.Parameter(torch.tensor(1.0, dtype=weight.dtype, device=weight.device), requires_grad=False)
+            self.zero_point = torch.nn.Parameter(torch.tensor(0, dtype=torch.int32, device=weight.device), requires_grad=False)
+            max_val = torch.max(torch.abs(weight))
+            self.scale.data = max_val / 127.0
+            weight_cpu = weight.cpu()
+            quantized_weight = torch.quantize_per_tensor(weight_cpu, self.scale.item(), self.zero_point.item(), torch.qint8)
+            return quantized_weight
+
+        def _quantize_weights_int4(self, weight):
+            # Symmetric Quantization for int4
+            max_val = torch.max(torch.abs(weight))
+            self.scale = torch.nn.Parameter(torch.tensor(max_val / 7.0, dtype=weight.dtype, device=weight.device), requires_grad=False)
+            self.zero_point = torch.nn.Parameter(torch.tensor(0, dtype=torch.int32, device=weight.device), requires_grad=False)
+
+            quantized = torch.round(weight / self.scale)
+            quantized = torch.clamp(quantized, -8, 7)
+            quantized = quantized.to(torch.int8)
+
+            return quantized.to(weight.device)
+
+        def _quantize_weights_uint4(self, weight):
+            # Symmetric Quantization for uint4
+            min_val = torch.min(weight)
+            max_val = torch.max(weight)
+            self.scale = torch.nn.Parameter(
+                (max_val - min_val) / 15.0,  # scale = (max - min) / (2^4 - 1)
+                requires_grad=False
+            )
+            self.zero_point = torch.nn.Parameter(
+                torch.round((-min_val) / self.scale).clamp(0, 15).to(torch.uint8),
+                requires_grad=False
+            )
+
+            quantized = torch.round((weight - min_val) / self.scale)
+            quantized = torch.clamp(quantized, 0, 15).to(torch.uint8)
+
+            return quantized.to(weight.device)
+
+        def forward_comfy_cast_weights(self, input):
+            weight, bias = cast_bias_weight(self, input)
+            if self.quant_enabled and not self.training:  # disable the quantization for training
+                if self.weight_bit == 8:
+                    weight = self._quantize_weights_int8(weight)
+                elif self.weight_bit == 4:
+                    if self.is_unsign:
+                        weight = self._quantize_weights_uint4(weight)
+                    else:
+                        weight = self._quantize_weights_int4(weight)
+            weight = weight.dequantize()  # dequantize
             return torch.nn.functional.linear(input, weight, bias)
 
         def forward(self, *args, **kwargs):
@@ -215,9 +282,11 @@ class disable_weight_init:
         else:
             raise ValueError(f"unsupported dimensions: {dims}")
 
-
 class manual_cast(disable_weight_init):
     class Linear(disable_weight_init.Linear):
+        comfy_cast_weights = True
+
+    class QuanLinear(disable_weight_init.QuanLinear):
         comfy_cast_weights = True
 
     class Conv1d(disable_weight_init.Conv1d):
@@ -243,7 +312,6 @@ class manual_cast(disable_weight_init):
 
     class Embedding(disable_weight_init.Embedding):
         comfy_cast_weights = True
-
 
 def fp8_linear(self, input):
     dtype = self.weight.dtype
